@@ -128,6 +128,12 @@
             color: #666;
             margin-bottom: 10px;
         }
+        #portfolio-description {
+            width: 100%;
+            padding: 10px;
+            margin: 12px 0;
+            font: inherit;
+        }
         .portfolio-card a {
             color: #0066cc;
             text-decoration: none;
@@ -139,6 +145,51 @@
             text-align: center;
             padding: 20px;
             margin-top: 40px;
+        }
+        @media (max-width: 700px) {
+            header {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 16px;
+                padding: 20px;
+            }
+            .header-nav {
+                flex-direction: column;
+                gap: 10px;
+            }
+            .header-nav button,
+            .search-section button {
+                min-height: 44px;
+            }
+            .container {
+                flex-direction: column;
+                margin: 12px auto;
+                padding: 0 12px;
+            }
+            .main-content {
+                padding: 20px;
+            }
+            .hero-section {
+                padding: 24px;
+            }
+            .hero-section h1 {
+                font-size: 28px;
+            }
+            .hero-section .cta-buttons {
+                flex-direction: column;
+            }
+            .cta-buttons button {
+                width: 100%;
+                min-height: 44px;
+            }
+            .portfolios-grid {
+                grid-template-columns: 1fr;
+            }
+            #upload-dialog {
+                width: calc(100% - 24px);
+                max-width: 480px;
+                margin: auto;
+            }
         }
     </style>
 </head>
@@ -209,6 +260,8 @@
                 <input id="portfolio-file" type="file" accept=".html,text/html" hidden>
             </div>
             <p id="selected-file" aria-live="polite"></p>
+            <label for="portfolio-description">Site description</label>
+            <input id="portfolio-description" type="text" maxlength="300">
             <button type="button" id="publish-portfolio-button">Publish</button>
             <button type="submit">Cancel</button>
         </form>
@@ -221,7 +274,6 @@
     <script>
         const searchInput = document.getElementById('portfolio-search');
         const searchButton = document.getElementById('search-button');
-        const portfolioCards = document.querySelectorAll('.portfolio-card');
         const noResults = document.getElementById('no-results');
         const uploadButton = document.getElementById('upload-portfolio-button');
         const uploadDialog = document.getElementById('upload-dialog');
@@ -229,9 +281,52 @@
         const chooseFileButton = document.getElementById('choose-file-button');
         const portfolioFile = document.getElementById('portfolio-file');
         const selectedFile = document.getElementById('selected-file');
+        const portfolioDescription = document.getElementById('portfolio-description');
         const publishButton = document.getElementById('publish-portfolio-button');
         const featuredPortfolioLinks = document.querySelectorAll('.portfolio-card a[data-portfolio]');
+        const portfoliosGrid = document.querySelector('.portfolios-grid');
+        const databasePromise = new Promise((resolve, reject) => {
+            const request = indexedDB.open('PortFiles', 1);
+            request.onupgradeneeded = () => {
+                request.result.createObjectStore('portfolios', { keyPath: 'id', autoIncrement: true });
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
         let selectedPortfolioFile = null;
+
+        function defaultPortfolioDescription() {
+            return `Uploaded on ${new Date().toLocaleDateString()}`;
+        }
+        portfolioDescription.value = defaultPortfolioDescription();
+
+        function addUploadedPortfolio(portfolio) {
+            const card = document.createElement('div');
+            card.className = 'portfolio-card';
+            const title = document.createElement('h3');
+            title.textContent = portfolio.name.replace(/\.html$/i, '');
+            const description = document.createElement('p');
+            description.textContent = portfolio.description || 'Uploaded Portfolio';
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(portfolio.file);
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.textContent = 'View Portfolio →';
+            card.append(title, description, link);
+            portfoliosGrid.appendChild(card);
+        }
+
+        async function restoreUploadedPortfolios() {
+            try {
+                const database = await databasePromise;
+                const request = database.transaction('portfolios', 'readonly').objectStore('portfolios').getAll();
+                request.onsuccess = () => request.result.forEach(addUploadedPortfolio);
+            } catch (error) {
+                console.error('Unable to load saved portfolios:', error);
+            }
+        }
+
+        restoreUploadedPortfolios();
 
         function openPlaceholderPortfolio(event) {
             event.preventDefault();
@@ -251,7 +346,7 @@
             const searchTerm = searchInput.value.trim().toLowerCase();
             let visibleCount = 0;
 
-            portfolioCards.forEach(card => {
+            portfoliosGrid.querySelectorAll('.portfolio-card').forEach(card => {
                 const matches = card.textContent.toLowerCase().includes(searchTerm);
                 card.style.display = matches ? '' : 'none';
                 if (matches) visibleCount++;
@@ -294,27 +389,37 @@
             selectedFile.textContent = `Selected: ${file.name}`;
         }
 
-        publishButton.addEventListener('click', () => {
+        publishButton.addEventListener('click', async () => {
             if (!selectedPortfolioFile) {
                 selectedFile.textContent = 'Please choose an HTML file to publish.';
                 return;
             }
 
-            const portfolioUrl = URL.createObjectURL(selectedPortfolioFile);
-            const card = document.createElement('div');
-            card.className = 'portfolio-card';
-            card.innerHTML = `<h3>${selectedPortfolioFile.name}</h3><p>Uploaded Portfolio</p>`;
-            const link = document.createElement('a');
-            link.href = portfolioUrl;
-            link.target = '_blank';
-            link.rel = 'noopener';
-            link.textContent = 'View Portfolio →';
-            card.appendChild(link);
-            document.querySelector('.portfolios-grid').appendChild(card);
-            uploadDialog.close();
-            selectedPortfolioFile = null;
-            selectedFile.textContent = '';
-            portfolioFile.value = '';
+            try {
+                const database = await databasePromise;
+                const transaction = database.transaction('portfolios', 'readwrite');
+                const portfolio = {
+                    name: selectedPortfolioFile.name.replace(/\.html$/i, ''),
+                    description: portfolioDescription.value.trim() || defaultPortfolioDescription(),
+                    file: selectedPortfolioFile,
+                    uploadedAt: Date.now()
+                };
+                transaction.objectStore('portfolios').add(portfolio);
+                transaction.oncomplete = () => {
+                    addUploadedPortfolio(portfolio);
+                    uploadDialog.close();
+                    selectedPortfolioFile = null;
+                    selectedFile.textContent = '';
+                    portfolioFile.value = '';
+                    portfolioDescription.value = defaultPortfolioDescription();
+                };
+                transaction.onerror = () => {
+                    selectedFile.textContent = 'Could not save this portfolio in this browser.';
+                };
+            } catch (error) {
+                selectedFile.textContent = 'Could not save this portfolio in this browser.';
+                console.error('Unable to save portfolio:', error);
+            }
         });
     </script>
 </body>

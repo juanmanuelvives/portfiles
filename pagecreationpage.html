@@ -288,6 +288,8 @@
       display: grid;
       place-items: center;
       overflow: hidden;
+      cursor: grab;
+      touch-action: none;
     }
 
     .page-element.image-card img {
@@ -295,6 +297,15 @@
       height: 100%;
       object-fit: cover;
       display: block;
+      pointer-events: none;
+      -webkit-user-drag: none;
+      user-select: none;
+    }
+
+    .page-element.is-dragging {
+      cursor: grabbing;
+      transition: none;
+      box-shadow: 0 12px 26px rgba(0, 0, 0, 0.18);
     }
 
     .page-element.text-box {
@@ -520,7 +531,7 @@
         <div class="toolbar-mini">
           <button class="mini-btn" id="zoomOut" type="button">-</button>
           <button class="mini-btn" id="zoomIn" type="button">+</button>
-          <button class="mini-btn" type="button">Preview</button>
+          <button class="mini-btn" id="previewButton" type="button">Preview</button>
         </div>
       </div>
 
@@ -784,35 +795,54 @@
     }
 
     function bindDrag(el) {
-      let dragging = false;
+      let activePointerId = null;
       let offsetX = 0;
       let offsetY = 0;
 
       el.addEventListener('pointerdown', (event) => {
         selectElement(el);
-        if (event.target.closest('input, textarea, button')) return;
-        dragging = true;
+        if (event.button !== 0 || event.target.closest('input, textarea, button')) return;
+        event.preventDefault();
+        activePointerId = event.pointerId;
         const rect = el.getBoundingClientRect();
         const pageRect = pageLayer.getBoundingClientRect();
-        offsetX = event.clientX - rect.left;
-        offsetY = event.clientY - rect.top;
-        el.setPointerCapture(event.pointerId);
+        const scaleX = pageLayer.offsetWidth ? pageRect.width / pageLayer.offsetWidth : 1;
+        const scaleY = pageLayer.offsetHeight ? pageRect.height / pageLayer.offsetHeight : 1;
+        offsetX = (event.clientX - rect.left) / (scaleX || 1);
+        offsetY = (event.clientY - rect.top) / (scaleY || 1);
+        el.classList.add('is-dragging');
+        el.setPointerCapture(activePointerId);
         el.style.zIndex = ++zCounter;
       });
 
       el.addEventListener('pointermove', (event) => {
-        if (!dragging) return;
+        if (event.pointerId !== activePointerId) return;
+        event.preventDefault();
         const pageRect = pageLayer.getBoundingClientRect();
-        let left = event.clientX - pageRect.left - offsetX;
-        let top = event.clientY - pageRect.top - offsetY;
-        left = Math.max(10, Math.min(left, pageRect.width - el.offsetWidth - 12));
-        top = Math.max(12, Math.min(top, pageRect.height - el.offsetHeight - 12));
+        const scaleX = pageLayer.offsetWidth ? pageRect.width / pageLayer.offsetWidth : 1;
+        const scaleY = pageLayer.offsetHeight ? pageRect.height / pageLayer.offsetHeight : 1;
+        let left = (event.clientX - pageRect.left) / (scaleX || 1) - offsetX;
+        let top = (event.clientY - pageRect.top) / (scaleY || 1) - offsetY;
+        left = Math.max(0, Math.min(left, pageLayer.clientWidth - el.offsetWidth));
+        top = Math.max(0, Math.min(top, pageLayer.clientHeight - el.offsetHeight));
         el.style.left = `${left}px`;
         el.style.top = `${top}px`;
       });
 
-      el.addEventListener('pointerup', () => { dragging = false; });
-      el.addEventListener('pointerleave', () => { dragging = false; });
+      const finishDrag = (event) => {
+        if (event.pointerId !== activePointerId) return;
+        activePointerId = null;
+        el.classList.remove('is-dragging');
+        if (el.hasPointerCapture(event.pointerId)) el.releasePointerCapture(event.pointerId);
+      };
+      el.addEventListener('pointerup', finishDrag);
+      el.addEventListener('pointercancel', finishDrag);
+      el.addEventListener('lostpointercapture', (event) => {
+        if (event.pointerId === activePointerId) {
+          activePointerId = null;
+          el.classList.remove('is-dragging');
+        }
+      });
     }
 
     document.querySelectorAll('.tool-btn').forEach(button => {
@@ -904,6 +934,38 @@
     document.getElementById('zoomOut').addEventListener('click', () => {
       const current = parseFloat(getComputedStyle(pageLayer).zoom || '1');
       pageLayer.style.zoom = `${Math.max(current - 0.1, 0.7)}`;
+    });
+
+    document.getElementById('previewButton').addEventListener('click', () => {
+      const previewWindow = window.open('', '_blank', 'width=1100,height=800');
+      if (!previewWindow) return;
+
+      const previewLayer = pageLayer.cloneNode(true);
+      previewLayer.querySelectorAll('.page-element').forEach(element => {
+        element.classList.remove('selected', 'is-dragging');
+        element.style.cursor = 'default';
+      });
+      previewLayer.removeAttribute('id');
+      previewLayer.removeAttribute('style');
+
+      previewWindow.document.open();
+      previewWindow.document.write(`<!DOCTYPE html>
+        <html lang="en"><head><meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Page preview</title>
+        <style>${document.querySelector('style').textContent}
+          body { display: block; min-height: 100vh; padding: 32px 16px; }
+          .canvas-wrap { padding: 0; background: transparent; }
+          .canvas { width: min(980px, 100%); margin: 0 auto; }
+          .canvas::before { display: none; }
+          .page-layer { min-height: 750px; }
+          .page-element { user-select: text; border-color: transparent; box-shadow: none; }
+          .page-element.image-card { border: 0; }
+          @media (max-width: 780px) { body { padding: 16px 8px; } }
+        </style></head><body>
+        <main class="canvas-wrap"><section class="canvas">${previewLayer.outerHTML}</section></main>
+        </body></html>`);
+      previewWindow.document.close();
     });
 
     document.querySelectorAll('.page-element').forEach(bindDrag);
